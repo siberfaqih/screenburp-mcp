@@ -10,10 +10,15 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import burp.api.montoya.ui.UserInterface
+import burp.api.montoya.ui.editor.EditorOptions
+import burp.api.montoya.ui.editor.HttpRequestEditor
+import burp.api.montoya.ui.editor.HttpResponseEditor
 import burp.api.montoya.utilities.Base64Utils
 import burp.api.montoya.utilities.RandomUtils
 import burp.api.montoya.utilities.URLUtils
@@ -23,11 +28,15 @@ import java.net.InetAddress
 import java.time.ZonedDateTime
 import java.util.Optional
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.ImageContent
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
@@ -41,7 +50,11 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
 import java.net.ServerSocket
+import javax.imageio.ImageIO
+import javax.swing.JLabel
+import javax.swing.JPanel
 import javax.swing.JTextArea
 
 class ToolsKtTest {
@@ -736,8 +749,472 @@ class ToolsKtTest {
     @Nested
     inner class PaginatedToolsTests {
         @Test
-        fun `get proxy history should paginate properly`() {
+        fun `screenshot proxy history should return MCP image content`() {
             val proxy = mockk<Proxy>()
+            val historyItem = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val response = mockk<HttpResponse>()
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(historyItem)
+            every { historyItem.request() } returns request
+            every { historyItem.response() } returns response
+            every { request.toString() } returns "GET /proof HTTP/1.1\r\nHost: example.test\r\nAuthorization: Bearer secret\r\n\r\n"
+            every { response.toString() } returns "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nproof"
+
+            runBlocking {
+                val result = client.callTool(
+                    "screenshot_proxy_http_history",
+                    mapOf(
+                        "offset" to 0,
+                        "title" to "Test proof",
+                        "highlights" to listOf(mapOf("match" to "HTTP/1.1 200", "color" to "green")),
+                        "annotations" to listOf(
+                            mapOf("match" to "proof", "label" to "Successful evidence", "color" to "blue")
+                        ),
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                assertEquals(2, result.content.size)
+                assertTrue(result.content[0] is TextContent)
+                assertTrue((result.content[0] as TextContent).text!!.contains("1 highlight matches"))
+                assertTrue((result.content[0] as TextContent).text!!.contains("1 annotation callouts"))
+                val image = result.content[1] as? ImageContent
+                assertNotNull(image)
+                assertEquals("image/png", image!!.mimeType)
+                val png = java.util.Base64.getDecoder().decode(image.data)
+                assertArrayEquals(
+                    byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
+                    png.take(8).toByteArray()
+                )
+            }
+        }
+
+        @Test
+        fun `burp capture evidence should render native editors as MCP image`() {
+            val proxy = mockk<Proxy>()
+            val historyItem = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val response = mockk<HttpResponse>()
+            val ui = mockk<UserInterface>(relaxed = true)
+            val requestEditor = mockk<HttpRequestEditor>(relaxed = true)
+            val responseEditor = mockk<HttpResponseEditor>(relaxed = true)
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(historyItem)
+            every { historyItem.request() } returns request
+            every { historyItem.response() } returns response
+            every { api.userInterface() } returns ui
+            every { ui.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditor
+            every { ui.createHttpResponseEditor(EditorOptions.READ_ONLY) } returns responseEditor
+            every { requestEditor.uiComponent() } returns JPanel().apply { add(JLabel("req")) }
+            every { responseEditor.uiComponent() } returns JPanel().apply { add(JLabel("res")) }
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_capture_evidence",
+                    mapOf(
+                        "request_id" to "0",
+                        "mode" to "native_editor",
+                        "layout" to "side_by_side",
+                        "theme" to "inherit",
+                        "capture_width" to 800,
+                        "capture_height" to 600,
+                        "highlight" to mapOf(
+                            "request" to listOf("mechanic_api"),
+                            "response" to listOf("HTTP/1.1 200")
+                        ),
+                        "redact_sensitive" to false,
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                assertEquals(2, result.content.size)
+                val text = (result.content[0] as TextContent).text!!
+                assertTrue(text.contains("native Burp HTTP editors"))
+                assertTrue(text.contains("Viewport capture"))
+                assertTrue(text.contains("original evidence"))
+                val image = result.content[1] as? ImageContent
+                assertNotNull(image)
+                assertEquals("image/png", image!!.mimeType)
+                val png = java.util.Base64.getDecoder().decode(image.data)
+                assertArrayEquals(
+                    byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
+                    png.take(8).toByteArray()
+                )
+            }
+
+            verify(exactly = 1) { requestEditor.setRequest(request) }
+            verify(exactly = 1) { responseEditor.setResponse(response) }
+        }
+
+        @Test
+        fun `burp capture evidence should reject unknown request ids explicitly`() {
+            val proxy = mockk<Proxy>()
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns emptyList()
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_capture_evidence",
+                    mapOf("request_id" to "42")
+                )
+                assertNotNull(result)
+                assertTrue(result!!.isError == true)
+                val text = (result.content[0] as TextContent).text!!
+                assertTrue(text.contains("No Proxy HTTP history item exists at offset 42"))
+            }
+        }
+
+        @Test
+        fun `burp capture evidence should reject unsupported themes explicitly`() {
+            runBlocking {
+                val result = client.callTool(
+                    "burp_capture_evidence",
+                    mapOf("request_id" to "0", "theme" to "dark")
+                )
+                assertNotNull(result)
+                assertTrue(result!!.isError == true)
+                val text = (result.content[0] as TextContent).text!!
+                assertTrue(text.contains("not supported"))
+            }
+        }
+
+        @Test
+        fun `burp smart evidence should capture regions with metadata and originals`() {
+            val proxy = mockk<Proxy>()
+            val historyItem = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val response = mockk<HttpResponse>()
+            val ui = mockk<UserInterface>(relaxed = true)
+            val requestEditor = mockk<HttpRequestEditor>(relaxed = true)
+            val responseEditor = mockk<HttpResponseEditor>(relaxed = true)
+            val requestText = "POST /fetch HTTP/1.1\r\nHost: example.test\r\n\r\n{\"url\":\"http://evil.example/hook\"}"
+            val responseText = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nline1\nfetched evil.example content here\nline3"
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(historyItem)
+            every { historyItem.request() } returns request
+            every { historyItem.response() } returns response
+            every { request.toString() } returns requestText
+            every { response.toString() } returns responseText
+            every { api.userInterface() } returns ui
+            every { ui.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditor
+            every { ui.createHttpResponseEditor(EditorOptions.READ_ONLY) } returns responseEditor
+            every { requestEditor.uiComponent() } returns JPanel().apply { add(JLabel("req")) }
+            every { responseEditor.uiComponent() } returns JPanel().apply { add(JLabel("res")) }
+            val caretSlot = slot<Int>()
+            every { responseEditor.setCaretPosition(capture(caretSlot)) } just runs
+            every { responseEditor.caretPosition() } answers { caretSlot.captured }
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_smart_evidence",
+                    mapOf(
+                        "request_id" to "0",
+                        "select" to listOf(mapOf("type" to "keyword", "expression" to "fetched evil.example")),
+                        "context_lines" to 1,
+                        "capture_width" to 800,
+                        "capture_height" to 600,
+                        "redact_sensitive" to false,
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                assertEquals(6, result.content.size)
+                assertTrue((result.content[1] as TextContent).text!!.contains(requestText))
+                assertTrue((result.content[2] as TextContent).text!!.contains("fetched evil.example content here"))
+                val image = result.content[4] as? ImageContent
+                assertNotNull(image)
+                assertEquals("image/png", image!!.mimeType)
+                val metadata = Json.parseToJsonElement((result.content[5] as TextContent).text!!).jsonObject
+                assertEquals("native_editor", metadata["screenshot_mode"]!!.jsonPrimitive.content)
+                assertEquals(false, metadata["redaction_applied"]!!.jsonPrimitive.boolean)
+                val regions = metadata["regions"]!!.jsonArray
+                assertEquals(1, regions.size)
+                val region = regions[0].jsonObject
+                assertEquals("response", region["side"]!!.jsonPrimitive.content)
+                assertEquals(true, region["scroll"]!!.jsonObject["verified"]!!.jsonPrimitive.boolean)
+                assertEquals("original", region["scroll"]!!.jsonObject["offset_basis"]!!.jsonPrimitive.content)
+                val match = region["matches"]!!.jsonArray[0].jsonObject
+                assertEquals("fetched evil.example", match["text"]!!.jsonPrimitive.content)
+                assertTrue(match["start_offset"]!!.jsonPrimitive.int > 0)
+            }
+
+            verify(exactly = 1) { responseEditor.setResponse(response) }
+        }
+
+        @Test
+        fun `burp smart evidence should report unmatched criteria explicitly`() {
+            val proxy = mockk<Proxy>()
+            val historyItem = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(historyItem)
+            every { historyItem.request() } returns request
+            every { historyItem.response() } returns null
+            every { request.toString() } returns "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_smart_evidence",
+                    mapOf(
+                        "request_id" to "0",
+                        "select" to listOf(mapOf("type" to "keyword", "expression" to "zzz-no-such-evidence")),
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                assertEquals(4, result.content.size)
+                assertTrue(result.content.none { it is ImageContent })
+                val metadata = Json.parseToJsonElement((result.content[3] as TextContent).text!!).jsonObject
+                assertEquals(0, metadata["regions"]!!.jsonArray.size)
+                assertTrue(
+                    metadata["unmatched_criteria"]!!.jsonArray.any {
+                        it.jsonPrimitive.content.contains("zzz-no-such-evidence")
+                    }
+                )
+            }
+        }
+
+        @Test
+        fun `burp smart evidence should offer manual capture when scrolling fails`() {
+            val proxy = mockk<Proxy>()
+            val historyItem = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val response = mockk<HttpResponse>()
+            val ui = mockk<UserInterface>(relaxed = true)
+            val requestEditor = mockk<HttpRequestEditor>(relaxed = true)
+            // Relaxed editor ignores caret placement: read-back stays 0.
+            val responseEditor = mockk<HttpResponseEditor>(relaxed = true)
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(historyItem)
+            every { historyItem.request() } returns request
+            every { historyItem.response() } returns response
+            every { request.toString() } returns "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
+            every { response.toString() } returns "HTTP/1.1 200 OK\r\n\r\n" +
+                (1..20).joinToString("\n") { "filler $it" } + "\nneedle here"
+            every { api.userInterface() } returns ui
+            every { ui.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditor
+            every { ui.createHttpResponseEditor(EditorOptions.READ_ONLY) } returns responseEditor
+            every { requestEditor.uiComponent() } returns JPanel()
+            every { responseEditor.uiComponent() } returns JPanel()
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_smart_evidence",
+                    mapOf(
+                        "request_id" to "0",
+                        "select" to listOf(mapOf("type" to "keyword", "expression" to "needle")),
+                        "redact_sensitive" to false,
+                    )
+                )
+                assertNotNull(result)
+                assertTrue(result!!.isError == true)
+                val text = (result.content[0] as TextContent).text!!
+                assertTrue(text.contains("Assisted manual capture"))
+            }
+        }
+
+        @Test
+        fun `burp diff evidence should report verdict with native and derivative images`() {
+            val proxy = mockk<Proxy>()
+            val baselineItem = mockk<ProxyHttpRequestResponse>()
+            val testItem = mockk<ProxyHttpRequestResponse>()
+            val baseReq = mockk<HttpRequest>()
+            val baseRes = mockk<HttpResponse>()
+            val testReq = mockk<HttpRequest>()
+            val testRes = mockk<HttpResponse>()
+            val ui = mockk<UserInterface>(relaxed = true)
+            val requestEditor = mockk<HttpRequestEditor>(relaxed = true)
+            val responseEditor = mockk<HttpResponseEditor>(relaxed = true)
+            val baseReqText = "POST /api/contact HTTP/1.1\r\nHost: x\r\n\r\n{\"url\":\"http://safe.test/r\"}"
+            val testReqText = "POST /api/contact HTTP/1.1\r\nHost: x\r\n\r\n{\"url\":\"http://evil.test/poc\"}"
+            val baseResText = "HTTP/1.1 200 OK\r\n\r\n{\"fetched\":\"nothing\"}"
+            val testResText = "HTTP/1.1 200 OK\r\n\r\n{\"fetched\":\"http://evil.test/poc content\"}"
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(baselineItem, testItem)
+            every { baselineItem.request() } returns baseReq
+            every { baselineItem.response() } returns baseRes
+            every { testItem.request() } returns testReq
+            every { testItem.response() } returns testRes
+            every { baseReq.toString() } returns baseReqText
+            every { baseRes.toString() } returns baseResText
+            every { testReq.toString() } returns testReqText
+            every { testRes.toString() } returns testResText
+            every { api.userInterface() } returns ui
+            every { ui.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditor
+            every { ui.createHttpResponseEditor(EditorOptions.READ_ONLY) } returns responseEditor
+            every { requestEditor.uiComponent() } returns JPanel().apply { add(JLabel("req")) }
+            every { responseEditor.uiComponent() } returns JPanel().apply { add(JLabel("res")) }
+            val reqCaret = slot<Int>()
+            val resCaret = slot<Int>()
+            every { requestEditor.setCaretPosition(capture(reqCaret)) } just runs
+            every { requestEditor.caretPosition() } answers { reqCaret.captured }
+            every { responseEditor.setCaretPosition(capture(resCaret)) } just runs
+            every { responseEditor.caretPosition() } answers { resCaret.captured }
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_diff_evidence",
+                    mapOf(
+                        "baseline_id" to "0",
+                        "request_id" to "1",
+                        "objective" to "server fetches the supplied url",
+                        "capture_width" to 800,
+                        "capture_height" to 600,
+                        "redact_sensitive" to false,
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                // summary + 4 originals + diff + analysis + native desc + native img + deriv desc + deriv img + boxed desc + boxed img + metadata
+                assertEquals(14, result.content.size)
+                val diffJson = Json.parseToJsonElement((result.content[5] as TextContent).text!!).jsonObject
+                assertTrue(diffJson["total_changes"]!!.jsonPrimitive.int >= 1)
+                val analysis = Json.parseToJsonElement((result.content[6] as TextContent).text!!).jsonObject
+                assertEquals("success", analysis["verdict"]!!.jsonPrimitive.content)
+                assertEquals("high", analysis["confidence"]!!.jsonPrimitive.content)
+                val native = ImageIO.read(ByteArrayInputStream(java.util.Base64.getDecoder().decode((result.content[8] as ImageContent).data)))
+                val derivative = ImageIO.read(ByteArrayInputStream(java.util.Base64.getDecoder().decode((result.content[10] as ImageContent).data)))
+                assertNotNull(native)
+                assertNotNull(derivative)
+                assertEquals(native!!.width, derivative!!.width)
+                assertTrue(derivative.height > native.height)
+                val boxed = ImageIO.read(ByteArrayInputStream(java.util.Base64.getDecoder().decode((result.content[12] as ImageContent).data)))
+                assertNotNull(boxed)
+                assertEquals(native.width, boxed!!.width)
+                assertEquals(native.height, boxed.height)
+                val metadata = Json.parseToJsonElement((result.content[13] as TextContent).text!!).jsonObject
+                assertEquals("success", metadata["verdict"]!!.jsonPrimitive.content)
+                // Mocked editors expose no real text components: reported, not fatal.
+                assertTrue(metadata["boxes"]!!.jsonArray.isEmpty())
+                assertTrue(metadata["box_notes"]!!.jsonArray.isNotEmpty())
+            }
+
+            verify(exactly = 1) { requestEditor.setRequest(testReq) }
+        }
+
+        @Test
+        fun `burp diff evidence toggles boxes and labels independently`() {
+            val proxy = mockk<Proxy>()
+            val baselineItem = mockk<ProxyHttpRequestResponse>()
+            val testItem = mockk<ProxyHttpRequestResponse>()
+            val baseReqT = mockk<HttpRequest>()
+            val testReqT = mockk<HttpRequest>()
+            val uiT = mockk<UserInterface>(relaxed = true)
+            val requestEditorT = mockk<HttpRequestEditor>(relaxed = true)
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(baselineItem, testItem)
+            every { baselineItem.request() } returns baseReqT
+            every { baselineItem.response() } returns null
+            every { testItem.request() } returns testReqT
+            every { testItem.response() } returns null
+            every { baseReqT.toString() } returns "POST /l HTTP/1.1\r\nHost: x\r\n\r\n{\"a\":\"1\"}"
+            every { testReqT.toString() } returns "POST /l HTTP/1.1\r\nHost: x\r\n\r\n{\"a\":\"2\"}"
+            every { api.userInterface() } returns uiT
+            every { uiT.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditorT
+            every { requestEditorT.uiComponent() } returns JPanel()
+            val caretSlotT = slot<Int>()
+            every { requestEditorT.setCaretPosition(capture(caretSlotT)) } just runs
+            every { requestEditorT.caretPosition() } answers { caretSlotT.captured }
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_diff_evidence",
+                    mapOf(
+                        "baseline_id" to "0",
+                        "request_id" to "1",
+                        "objective" to "value change is visible",
+                        "capture_width" to 800,
+                        "capture_height" to 600,
+                        "redact_sensitive" to false,
+                        "bounding_boxes" to false,
+                        "box_labels" to false,
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                // No boxed desc/img blocks without bounding_boxes: 12 blocks.
+                assertEquals(12, result.content.size)
+                assertTrue((result.content[9] as TextContent).text!!.contains("caption only"))
+                val metadata = Json.parseToJsonElement((result.content[11] as TextContent).text!!).jsonObject
+                assertEquals(false, metadata["box_labels"]!!.jsonPrimitive.boolean)
+            }
+        }
+
+        @Test
+        fun `burp diff evidence with redaction keeps raw editors and notes overlays`() {
+            val proxy = mockk<Proxy>()
+            val baselineItem = mockk<ProxyHttpRequestResponse>()
+            val testItem = mockk<ProxyHttpRequestResponse>()
+            val baseReq = mockk<HttpRequest>()
+            val testReq = mockk<HttpRequest>()
+            val ui = mockk<UserInterface>(relaxed = true)
+            val requestEditor = mockk<HttpRequestEditor>(relaxed = true)
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(baselineItem, testItem)
+            every { baselineItem.request() } returns baseReq
+            every { baselineItem.response() } returns null
+            every { testItem.request() } returns testReq
+            every { testItem.response() } returns null
+            every { baseReq.toString() } returns "POST /l HTTP/1.1\r\nHost: x\r\n\r\n{\"password\":\"a\"}"
+            every { testReq.toString() } returns "POST /l HTTP/1.1\r\nHost: x\r\n\r\n{\"password\":\"b\"}"
+            every { api.userInterface() } returns ui
+            every { ui.createHttpRequestEditor(EditorOptions.READ_ONLY) } returns requestEditor
+            every { requestEditor.uiComponent() } returns JPanel()
+            val caretSlot = slot<Int>()
+            every { requestEditor.setCaretPosition(capture(caretSlot)) } just runs
+            every { requestEditor.caretPosition() } answers { caretSlot.captured }
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_diff_evidence",
+                    mapOf(
+                        "baseline_id" to "0",
+                        "request_id" to "1",
+                        "objective" to "password change is reflected",
+                        "capture_width" to 800,
+                        "capture_height" to 600,
+                        "redact_sensitive" to true,
+                    )
+                )
+                assertNotNull(result)
+                assertFalse(result!!.isError == true)
+                val metadata = Json.parseToJsonElement((result.content.last() as TextContent).text!!).jsonObject
+                assertEquals(true, metadata["redaction_applied"]!!.jsonPrimitive.boolean)
+                assertTrue(metadata["box_notes"]!!.jsonArray.isNotEmpty())
+            }
+
+            // Raw objects reach the editor: never rebuilt.
+            verify(exactly = 1) { requestEditor.setRequest(testReq) }
+        }
+
+        @Test
+        fun `burp diff evidence should reject identical pairs explicitly`() {
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(item)
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { request.toString() } returns "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+
+            runBlocking {
+                val result = client.callTool(
+                    "burp_diff_evidence",
+                    mapOf(
+                        "baseline_id" to "0",
+                        "request_id" to "0",
+                        "objective" to "anything",
+                    )
+                )
+                assertNotNull(result)
+                assertTrue(result!!.isError == true)
+            }
+        }
+
+        @Test
+        fun `get proxy history should paginate properly`() {            val proxy = mockk<Proxy>()
             val proxyHistory = listOf(
                 mockk<ProxyHttpRequestResponse>(),
                 mockk<ProxyHttpRequestResponse>(),

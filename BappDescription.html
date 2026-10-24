@@ -1,7 +1,18 @@
 <p>
-	Integrates Burp Suite with AI clients using the Model Context Protocol (MCP). This extension exposes Burp
-	functionality through an MCP server, enabling AI assistants to perform security testing tasks, analyze traffic, and
-	interact with Burp tools programmatically.
+	Turn Burp traffic into screenshots your report can actually use — without
+	leaving your AI chat. ScreenBurp lets assistants such as OpenCode, Claude,
+	and ChatGPT look at your Proxy history and hand you back a clean evidence
+	PNG: the real request and response, the important parts highlighted, and
+	secrets hidden by default.
+</p>
+
+<p>
+	It builds on PortSwigger's Burp MCP Server, so all the usual MCP tools are
+	still there — sending requests, browsing history, Repeater, Intruder,
+	Collaborator, config, and encoding helpers. ScreenBurp adds the screenshot
+	tools on top. And it plays it straight: it never invents or rebuilds an HTTP
+	message to make a nicer picture. If something can't be captured for real,
+	you get a clear explanation instead of a fake image.
 </p>
 
 <p>
@@ -14,28 +25,22 @@
 	policies.
 </p>
 
-<h2>Features</h2>
+<h2>What it adds</h2>
 <ul>
-	<li>Send HTTP/1.1 and HTTP/2 requests directly from AI clients with security controls</li>
-	<li>Access and filter proxy history (HTTP and WebSocket) with regex support</li>
-	<li>Generate and poll Burp Collaborator payloads for out-of-band testing (Professional only)</li>
-	<li>Create Repeater tabs and send requests to Intruder</li>
-	<li>Export and modify project and user configuration via JSON</li>
-	<li>Control proxy intercept, task execution engine, and message editor contents</li>
-	<li>Built-in encoding utilities (URL, Base64) and random string generation</li>
-	<li>Automatic Claude Desktop installation with packaged stdio proxy server</li>
-	<li>Configurable target approval system for HTTP requests and history access</li>
-	<li>Interact with Organizer entries</li>
+	<li>Screenshot any Proxy history entry, by position or by search — no tab-switching or manual cropping</li>
+	<li>Native captures that look like Burp because they are Burp: real message editors, your theme, your fonts</li>
+	<li>Smart captures for long responses — find the few lines that matter and shoot each one</li>
+	<li>Before/after diff evidence for exploits, with the payload and proof labelled for you</li>
+	<li>Highlights, numbered callouts, and red boxes around the bits you point at</li>
+	<li>Secrets blacked out by default — auth headers, cookies, tokens, passwords, and JWTs</li>
 </ul>
 
-<h2>Usage</h2>
+<h2>Getting started</h2>
 <ol>
-	<li>Navigate to the "MCP" tab and enable the MCP server.</li>
-	<li>Configure security settings including auto-approve targets and configuration editing permissions.</li>
-	<li>Use the installer button to automatically configure Claude Desktop, or manually configure your MCP client to
-		connect to <code class="InlineCode">http://127.0.0.1:9876</code> (SSE mode) or use the packaged stdio proxy
-		server.</li>
-	<li>Interact with Burp through your AI client using the available MCP tools.</li>
+	<li>Load the extension JAR via <strong>Extensions → Installed → Add</strong> (disable the official MCP Server first — they share a port).</li>
+	<li>Open the "MCP" tab and switch the server on.</li>
+	<li>Connect your MCP client to <code class="InlineCode">http://127.0.0.1:9876</code>, or use the packaged stdio proxy server.</li>
+	<li>Then just ask, in plain words: <em>"Screenshot the login request that got a 401, highlight the status line, and hide any tokens."</em></li>
 </ol>
 
-<p><br>Copyright &copy; 2025-2026 PortSwigger Ltd.</p>
+<p><br>Fork of the PortSwigger MCP Server. Copyright &copy; 2025-2026 PortSwigger Ltd. for the upstream work; screenshot and evidence tools added by ScreenBurp contributors.</p>

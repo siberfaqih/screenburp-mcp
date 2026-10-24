@@ -37,3 +37,6 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### ScreenBurp evidence output (repo root only — not src/**/evidence/) ###
+/evidence/
